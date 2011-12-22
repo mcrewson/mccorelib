@@ -18,15 +18,39 @@ import errno, fcntl, heapq, os, select, socket, sys, time
 
 try:
     from collections import deque
-except ImportError:
-    # backport the 2.4 queue into 2.3
-    from backport import deque
+    class MyFifo (object):
+        def __init__ (self):
+            self.fifo = deque()
+        def append (self, el):
+            self.fifo.append(el)
+        def prepend (self, el):
+            self.fifo.appendleft(el)
+        def peek (self):
+            return self.fifo[0]
+        def replace (self, el):
+            self.fifo[0] = el
+        def remove (self):
+            del self.fifo[0]
+        def isempty (self):
+            return len(self.fifo) == 0
 
-try:
-    from OpenSSL import SSL
-    ssl_supported = True
 except ImportError:
-    ssl_supported = False
+    class MyFifo (object):
+        # slower, but python 2.3 compatible version
+        def __init__ (self):
+            self.fifo = []
+        def append (self, el):
+            self.fifo.append(el)
+        def prepend (self, el):
+            self.fifo.insert(0, el)
+        def peek (self):
+            return self.fifo[0]
+        def replace (self, el):
+            self.fifo[0] = el
+        def remove (self):
+            del self.fifo[0]
+        def isempty (self):
+            return len(self.fifo) == 0
 
 from myapp.log import getlog
 
@@ -43,7 +67,7 @@ class Reactable (object):
         super(Reactable, self).__init__()
         self.reactor = reactor or get_reactor()
         self.closed = False
-        self.fifo = deque()
+        self.fifo = MyFifo()
 
     def on_data_read (self, data):
         pass
@@ -83,7 +107,7 @@ class Reactable (object):
         return not self.closed
 
     def writable (self):
-        return not self.closed and self.fifo
+        return not self.closed and not self.fifo.isempty()
 
     def handle_read_event (self):
         data = self.handle_read()
@@ -93,8 +117,8 @@ class Reactable (object):
             self.close()
 
     def handle_write_event (self):
-        while self.fifo and self.closed == False:
-            first = self.fifo[0]
+        while not self.fifo.isempty() and not self.closed:
+            first = self.fifo.peek()
 
             # handle empty string/buffer or None entry
             if first is None:
@@ -106,20 +130,17 @@ class Reactable (object):
             try:
                 data = buffer(first, 0, obs)
             except TypeError:
-                data = first.more()
-                if daa:
-                    self.fifo.appendleft(data)
-                else:
-                    del self.fifo[0]
+                # non-bufferable object. skip it
+                self.fifo.remove()
                 continue
 
             # write it!
             num_written = self.handle_write(data)
             if num_written:
                 if num_written < len(data) or obs < len(first):
-                    self.fifo[0] = first[num_written:]
+                    self.fifo.replace(first[num_written:]
                 else:
-                    del self.fifo[0]
+                    self.fifo.remove()
 
     def handle_exception_event (self):
         self.close()
@@ -318,85 +339,6 @@ class SocketReactable (Reactable):
 
 ##############################################################################
 
-if ssl_supported == True:
-    class SSLSocketReactable (SocketReactable):
-
-        def __init__ (self, cert, pkey, cacert=None, addr=None, sock=None, reactor=None):
-            self.ssl_ctx = None
-            self.set_ssl_certificate(cert, pkey, cacert)
-            super(SSLSocketReactable, self).__init__(addr, sock, reactor)
-
-        def set_ssl_certificae (self, cert, pkey, cacert=None):
-            self.set_ssl_context(self._create_ssl_context(cert, pkey, cacert))
-
-        def set_ssl_context (self, ctx):
-            self.ssl_ctx = ctx
-
-        def create_socket (self, family, type):
-            sock = socket.socket(family, type)
-            if self.ssl_ctx is not None:
-                sock = SSL.Connection(self.ssl_ctx, sock)
-            self.set_socket(sock)
-
-        def handle_read (self):
-            while True:
-                try:
-                    return super(SSLSocketReactable, self).handle_read()
-                except SSL.ZeroReturnError:
-                    return ''
-                except SSL.WantReadError:
-                    time.sleep(0.2)
-                    continue
-                except SSL.Error, e:
-                    if self._can_ignore_ssl_error(e):
-                        return ''
-                    raise
-
-        def handle_write (self, data):
-            while True:
-                try:
-                    return super(SSLSocketReactable, self).handle_write(data)
-                except SSL.SysCallError, e:
-                    if e.args[0] == errno.EPIPE:
-                        self.close()
-                        return 0
-                    elif e.args[0] == errno.EWOULDBLOCK:
-                        return 0
-                    else:
-                        raise socket.error(e)
-                except (SSL.WantWriteError, SSL.WantReadError):
-                    time.sleep(0.2)
-                    continue
-
-        def _create_ssl_context (self, cert, pkey, cacert=None):
-            ctx = SSL.Context(SSL.SSLv3_METHOD)
-            ctx.use_certificate_file(cert)
-            ctx.use_privatekey_file(pkey)
-            if cacert is not None:
-                ctx.load_client_ca(cacert)
-                ctx.load_verify_locations(cacert)
-                verify = SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT
-                def our_verify (connection, x509, errNum, errDepth, preverifyOK):
-                    return preverifyOK
-                ctx.set_verify(verify, our_verify)
-                ctx.set_verify_depth(10)
-            ctx.set_options(SSL.OP_NO_SSLv2 | SSL.OP_NO_TLSv1)
-            return ctx
-
-        def _can_ignore_ssl_error (e):
-            if e.args[0] in (errno.ECONNRESET, ECONNREFUSED):
-                return True
-            s = "%s" % e
-            if s == "no certificate returned":
-                return True
-            elif s == "wrong version number":
-                return True
-            elif s == "unexpected eof":
-                return True
-            return False
-
-##############################################################################
-
 class Protocol (SocketReactable):
 
     message_delimiter = None
@@ -503,16 +445,6 @@ class Server (SocketReactable):
 
     def on_accept (self, sock, addr):
         self.protocol(addr, sock, self.reactor)
-
-##############################################################################
-
-if ssl_supported == True:
-    class SSLServer (SSLSocketReactable, Server):
-
-        def __init__ (self, bind_address, protocol, cert, pkey,
-                      cacert=None, sock=None, reactor=None):
-            SSLSocketReactable.__init__(self, cert, pkey, cacert, sock, reactor)
-            Server.__init__(self, bind_address, protocol, sock, reactor)
 
 ##############################################################################
 
@@ -808,6 +740,7 @@ class EpollReactor (Reactor):
 ##############################################################################
 
 class KqueueReactor (Reactor):
+    # not implemented yet
     pass
 
 ##############################################################################

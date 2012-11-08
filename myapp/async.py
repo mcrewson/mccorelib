@@ -1,6 +1,6 @@
 # vim:set ts=4 sw=4 et nowrap syntax=python ff=unix:
 #
-# Copyright 2011 Mark Crewson <mark@crewson.net>
+# Copyright 2011-2012 Mark Crewson <mark@crewson.net>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,43 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import errno, fcntl, heapq, os, select, socket, sys, time
-
-try:
-    from collections import deque
-    class MyFifo (object):
-        def __init__ (self):
-            self.fifo = deque()
-        def append (self, el):
-            self.fifo.append(el)
-        def prepend (self, el):
-            self.fifo.appendleft(el)
-        def peek (self):
-            return self.fifo[0]
-        def replace (self, el):
-            self.fifo[0] = el
-        def remove (self):
-            del self.fifo[0]
-        def isempty (self):
-            return len(self.fifo) == 0
-
-except ImportError:
-    class MyFifo (object):
-        # slower, but python 2.3 compatible version
-        def __init__ (self):
-            self.fifo = []
-        def append (self, el):
-            self.fifo.append(el)
-        def prepend (self, el):
-            self.fifo.insert(0, el)
-        def peek (self):
-            return self.fifo[0]
-        def replace (self, el):
-            self.fifo[0] = el
-        def remove (self):
-            del self.fifo[0]
-        def isempty (self):
-            return len(self.fifo) == 0
+import errno, fcntl, heapq, os, select, sys, time
+from collections import deque
 
 from myapp.log import getlog
 
@@ -67,7 +32,7 @@ class Reactable (object):
         super(Reactable, self).__init__()
         self.reactor = reactor or get_reactor()
         self.closed = False
-        self.fifo = MyFifo()
+        self.fifo = deque()
 
     def on_data_read (self, data):
         pass
@@ -107,7 +72,7 @@ class Reactable (object):
         return not self.closed
 
     def writable (self):
-        return not self.closed and not self.fifo.isempty()
+        return not self.closed and self.fifo
 
     def handle_read_event (self):
         data = self.handle_read()
@@ -117,8 +82,8 @@ class Reactable (object):
             self.close()
 
     def handle_write_event (self):
-        while not self.fifo.isempty() and not self.closed:
-            first = self.fifo.peek()
+        while self.fifo and self.closed == False:
+            first = self.fifo[0]
 
             # handle empty string/buffer or None entry
             if first is None:
@@ -130,17 +95,20 @@ class Reactable (object):
             try:
                 data = buffer(first, 0, obs)
             except TypeError:
-                # non-bufferable object. skip it
-                self.fifo.remove()
+                data = first.more()
+                if daa:
+                    self.fifo.appendleft(data)
+                else:
+                    del self.fifo[0]
                 continue
 
             # write it!
             num_written = self.handle_write(data)
             if num_written:
                 if num_written < len(data) or obs < len(first):
-                    self.fifo.replace(first[num_written:]
+                    self.fifo[0] = first[num_written:]
                 else:
-                    self.fifo.remove()
+                    del self.fifo[0]
 
     def handle_exception_event (self):
         self.close()
@@ -221,125 +189,7 @@ class ReadOnlyFileDescriptorReactable (FileDescriptorReactable):
 
 ##############################################################################
 
-class SocketReactable (Reactable):
-
-    connected = False
-    accepting = False
-
-    def __init__ (self, addr=None, sock=None, reactor=None):
-        super(SocketReactable, self).__init__(reactor=reactor)
-        self.address = addr
-        if sock is not None:
-            self.set_socket(sock)
-
-    def set_socket (self, sock):
-        self.socket = sock
-        self.socket.setblocking(0)
-        self.add_to_reactor()
-
-    def create_socket (self, family=socket.AF_INET, type=socket.SOCK_STREAM):
-        self.set_socket(socket.socket(family, type))
-
-    def on_accept (self, sock, addr):
-        pass
-
-    def on_connect (self):
-        pass
-
-    ##############################################
-
-    def fileno (self):
-        return self.socket.fileno()
-
-    def writable (self):
-        if not self.connected: return True
-        super(SocketReactable, self).writable()
-
-    def handle_read_event (self):
-        if self.accepting:
-            if not self.connected:
-                self.connected = True
-            self.handle_accept()
-            return
-        if not self.connected:
-            self.handle_connect()
-            self.connected = True
-        super(SocketReactable, self).handle_read_event()
-
-    def handle_write_event (self):
-        if not self.connected:
-            self.handle_connect()
-            self.connected = True
-        super(SocketReactable, self).handle_write_event()
-
-    def handle_accept (self):
-        try:
-            sock, addr = self.socket.accept()
-            self.on_accept(sock, addr)
-        except socket.error, err:
-            if err.args[0] != errno.EWOULDBLOCK:
-                raise
-
-    def handle_connect (self):
-        assert self.address is not None, "no address specified for connect"
-        self.connected = False
-        err = self.socket.connect_ex(self.address)
-        if err in (errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK):
-            return
-        if err in (errno.EISCONN, 0):
-            self.connected = True
-            self.on_connect()
-        else:
-            raise socket.error(err, errorcode[err])
-
-    def handle_read (self):
-        try:
-            return self.socket.recv(self.in_buffer_size)
-        except socket.error, err:
-            if err.args[0] in (errno.ECONNRESET, errno.ENOTCONN, errno.ESHUTDOWN):
-                return ''
-            else:
-                raise
-
-    def handle_write (self, data):
-        try:
-            return self.socket.send(data)
-        except socket.error, err:
-            if err.args[0] != errno.EWOULDBLOCK:
-                raise
-            return 0
-
-    def handle_close (self):
-        self.connected = False
-        self.accepting = False
-        try:
-            self.socket.close()
-        except socket.error, err:
-            if err.args[0] not in (errno.ENOTCONN, errno.EBADF):
-                raise
-
-    ##############################################
-
-    # Socket object methods
-
-    def bind (self, addr):
-        self.socket.bind(addr)
-
-    def listen (self, num):
-        self.accepting = True
-        return self.socket.listen(num)
-
-    def set_reuse_addr (self):
-        try:
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,
-                                   self.socket.getsockopt(socket.SOL_SOCKET, 
-                                                          socket.SO_REUSEADDR) | 1)
-        except socket.error:
-            pass
-
-##############################################################################
-
-class Protocol (SocketReactable):
+class ProtocolMixin (Reactable):
 
     message_delimiter = None
     message_max_size  = 16384
@@ -370,7 +220,7 @@ class Protocol (SocketReactable):
 
 ##############################################################################
 
-class LineOrientedProtocol (Protocol):
+class LineOrientedProtocolMixin (ProtocolMixin):
 
     message_delimiter = '\n'
     
@@ -379,7 +229,7 @@ class LineOrientedProtocol (Protocol):
 
 ##############################################################################
 
-class ReactableTimeout:
+class TimeoutMixin (object):
     """
     Mixin for reactables that wish to have timeouts.
     """
@@ -423,28 +273,6 @@ class ReactableTimeout:
     def __timed_out (self):
         self.__timeout_call = None
         self.on_timeout()
-
-##############################################################################
-
-class Server (SocketReactable):
-
-    def __init__ (self, bind_address, protocol, sock=None, reactor=None):
-        self.bind_address = bind_address
-        self.protocol = protocol
-        super(Server, self).__init__(sock=sock, reactor=reactor)
-        if not sock:
-            self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.set_reuse_addr()
-
-    def activate (self):
-        self.bind(self.bind_address)
-        self.listen(5)
-
-    def writable (self):
-        return False
-
-    def on_accept (self, sock, addr):
-        self.protocol(addr, sock, self.reactor)
 
 ##############################################################################
 
@@ -606,8 +434,8 @@ class Reactor (object):
     def _calc_timeout (self):
         self._insert_new_calledlaters()
         if not self._pending_timed_calls:
-            return 0
-        return max(0, self._pending_timed_calls[0].time - time.time())
+            return 1.0
+        return max(0.001, self._pending_timed_calls[0].time - time.time())
 
     def _do_iteration (self, timeout=0.0):
         raise NotImplementedError("override this function in your reactors")
@@ -739,12 +567,6 @@ class EpollReactor (Reactor):
 
 ##############################################################################
 
-class KqueueReactor (Reactor):
-    # not implemented yet
-    pass
-
-##############################################################################
-
 def get_reactor ():
     global __the_reactor
     try:
@@ -756,8 +578,6 @@ def get_reactor ():
     # Calculate the best reactor to use
     if hasattr(select, "epoll"):
         __the_reactor = EpollReactor()
-#    elif hasattr(select, "kqueue"):
-#        __the_reactor = KqueueReactor()
     elif hasattr(select, "poll"):
         __the_reactor = PollReactor()
     else:
@@ -773,93 +593,6 @@ def set_reactor (reactor):
 def free_reactor ():
     global __the_reactor
     __the_reactor = None
-
-##############################################################################
-
-def __test ():
-
-    class ChatProtocol (LineOrientedProtocol, ReactableTimeout):
-
-        channels = dict()
-
-        idletime = 60
-
-        def __init__ (self, sock, addr, reactor):
-            super(ChatProtocol, self).__init__(sock, addr, reactor)
-            ChatProtocol.channels[self] = 1
-            self.nick = None
-            self.write_data('nickname: ')
-            self.set_timeout(self.idletime)
-
-        def on_closed (self):
-            del ChatProtocol.channels[self]
-
-        def on_timeout (self):
-            self.write_line("Connection timed out. Goodbye.")
-            self.handle_talk("[quit - timed out]")
-            self.close_when_done()
-
-        def on_message_received (self, line):
-            self.reset_timeout()
-            if self.nick is None:
-                try:
-                    self.nick = line.split()[0]
-                except IndexError:
-                    self.nick = None
-                if not self.nick:
-                    self.write_line("Huh?")
-                    self.write_data('nickname: ')
-                else:
-                    # Greet
-                    self.write_line("Hello, %s" % self.nick)
-                    self.handle_talk("[joined]")
-                    self.cmd_callers(None)
-            else:
-                if not line: pass
-                elif line[0] != '/':
-                    self.handle_talk(line)
-                else:
-                    self.handle_command(line)
-
-        def handle_talk (self, line):
-            for channel in ChatProtocol.channels.keys():
-                if channel is not self:
-                    channel.write_line("%s: %s" % (self.nick, line))
-
-        def handle_command (self, line):
-            command = line.split()
-            name = 'cmd_%s' % command[0][1:]
-            if hasattr(self, name):
-                method = getattr(self, name)
-                if callable(method):
-                    method(command[1:])
-                    return
-            self.write_line('unknown command: %s' % command[0])
-
-        def cmd_quit (self, args):
-            if args:
-                self.handle_talk('[quit] (%s)' % ' '.join(args))
-            else:
-                self.handle_talk('[quit]')
-            self.write_line('goodbye.')
-            self.close_when_done()
-
-        cmd_q = cmd_quit
-
-        def cmd_callers (self, args):
-            num_channels = len(ChatProtocol.channels)
-            if num_channels == 1:
-                self.write_line("[You're the only caller]")
-            else:
-                self.write_line("[There are %d callers]" % (num_channels))
-                nicks = [ x.nick or '<unknown>' for x in ChatProtocol.channels.keys() ]
-                self.write_data(' ' + '\r\n '.join(nicks) + '\r\n')
-
-    Server(bind_address=('', 8518), protocol=ChatProtocol).activate()
-    get_reactor().start()
-
-if __name__ == "__main__":
-    __test()
 
 ##############################################################################
 ## THE END

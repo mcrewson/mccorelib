@@ -49,14 +49,13 @@ class Protocol (baseobject.BaseObject):
     def __init__ (self, transport, **kw):
         super(Protocol, self).__init__()
         self._parse_options(Protocol.options, kw)
+        self.transport = transport
 
     def make_connection (self, transport):
-        self.transport = transport
         self.on_connection_made()
 
     def data_in (self, data):
         assert self.message_delimiter is not None, "message_delimiter not specified"
-        print "data_in"
         self.__buffer += data
         while self.__buffer:
             try:
@@ -78,7 +77,7 @@ class TCPChannel (asyncnet.TCPReactable):
 
     def __init__ (self, protocol, **kw):
         super(TCPChannel, self).__init__(**kw)
-        self.protocol = protocol
+        self.protocol = protocol(self, **kw)
         self.protocol.make_connection(self)
 
     def on_data_read (self, data):
@@ -93,10 +92,11 @@ class TCPServer (asyncnet.TCPListener):
     def __init__ (self, protocol, **kw):
         assert issubclass(protocol, Protocol), 'protocol must be a class, not an instance'
         super(TCPServer, self).__init__(**kw)
-        self.protocol = protocol(self, **kw)
+        self.protocol = protocol
+        self.protocol_kw = dict([i for i in kw.items() if i[0] not in ('address','socket')])
 
     def on_accept (self, sock, addr):
-        TCPChannel(self.protocol, address=addr, socket=sock)
+        TCPChannel(self.protocol, address=addr, socket=sock, **self.protocol_kw)
 
 ##############################################################################
 
@@ -107,7 +107,7 @@ if asyncnet.ssl_supported == True:
         def __init__ (self, protocol, **kw):
             assert issubclass(protocol, Protocol), 'protocol must be a class, not an instance'
             super(SSLServer, self).__init__(**kw)
-            self.protocol = protocol(self, **kw)
+            self.protocol = protocol
 
         def on_accept (self, sock, addr):
             TCPChannel(self.protocol, address=addr, socket=sock)
@@ -146,17 +146,15 @@ def __test ():
 
     class ChatProtocol (Protocol):
 
-        message_delimiter = '\n'
-
         channels = dict()
 
         def write_line (self, line):
-            self.write_data(line + self.message_delimiter)
+            self.write(line + self.message_delimiter)
 
         def on_connection_made (self):
             ChatProtocol.channels[self] = 1
             self.nick = None
-            self.write_data('nickname: ')
+            self.write('nickname: ')
 
         def on_connection_lost (self):
             del ChatProtocol.channels[self]
@@ -169,7 +167,7 @@ def __test ():
                     self.nick = None
                 if not self.nick:
                     self.write_line("Huh?")
-                    self.write_data('nickname: ')
+                    self.write('nickname: ')
                 else:
                     # Greet
                     self.write_line("Hello, %s" % self.nick)
@@ -214,9 +212,9 @@ def __test ():
             else:
                 self.write_line("[There are %d callers]" % (num_channels))
                 nicks = [ x.nick or '<unknown>' for x in ChatProtocol.channels.keys() ]
-                self.write_data(' ' + '\r\n '.join(nicks) + '\r\n')
+                self.write(' ' + '\r\n '.join(nicks) + '\r\n')
 
-    TCPServer(ChatProtocol, address=('', 8518)).activate()
+    TCPServer(ChatProtocol, address=('', 8518), message_delimiter='\n').activate()
     get_reactor().start()
 
 if __name__ == "__main__":

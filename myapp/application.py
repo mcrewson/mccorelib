@@ -19,6 +19,7 @@ __all__ = [ 'Application', 'get_app', ]
 
 import signal, sys, traceback
 
+from myapp.async             import get_reactor, free_reactor
 from myapp.baseobject        import BaseObject, NonStdlibError
 from myapp.config            import Config, ConfigError
 from myapp.log               import configure as configurelog, getlog
@@ -145,6 +146,21 @@ class Application (BaseObject):
         sys.stderr.write('ERROR: %s\n' % message)
         sys.stderr.flush()
         sys.exit(errorcode)
+
+#############################################################################
+
+class AsyncApplication (Application):
+
+    def setup (self):
+        super(AsyncApplication, self).setup()
+        self.reactor = get_reactor()
+
+    def cleanup (self):
+        free_reactor()
+        super(AsyncApplication, self).cleanup()
+
+    def run (self):
+        self.reactor.start()
 
 #############################################################################
 ## THE END

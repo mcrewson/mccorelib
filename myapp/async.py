@@ -17,19 +17,23 @@
 import errno, fcntl, heapq, os, select, sys, time
 from collections import deque
 
-from myapp.log import getlog
+from myapp.baseobject        import BaseObject
+from myapp.log               import getlog
+from myapp.string_conversion import convert_to_integer
 
 ##############################################################################
 
 _reraised_exceptions = (KeyboardInterrupt, SystemExit)
 
-class Reactable (object):
+class Reactable (BaseObject):
 
-    in_buffer_size  = 4096
-    out_buffer_size = 4096
+    options = { 'in_buffer_size'  : (4096, convert_to_integer), 
+                'out_buffer_size' : (4096, convert_to_integer),
+              }
 
-    def __init__ (self, reactor=None):
-        super(Reactable, self).__init__()
+    def __init__ (self, reactor=None, **kw):
+        super(Reactable, self).__init__(**kw)
+        self._parse_options(Reactable.options, kw)
         self.reactor = reactor or get_reactor()
         self.closed = False
         self.fifo = deque()
@@ -141,8 +145,8 @@ class Reactable (object):
 
 class FileDescriptorReactable (Reactable):
 
-    def __init__ (self, fd=None, reactor=None):
-        super(FileDescriptorReactable, self).__init__(reactor=reactor)
+    def __init__ (self, fd=None, **kw):
+        super(FileDescriptorReactable, self).__init__(**kw)
         if fd is not None:
             self.set_filedescriptor(fd)
 
@@ -186,46 +190,6 @@ class ReadOnlyFileDescriptorReactable (FileDescriptorReactable):
 
     def writable (self):
         return False
-
-##############################################################################
-
-class ProtocolMixin (Reactable):
-
-    message_delimiter = None
-    message_max_size  = 16384
-
-    __buffer = ''
-
-    def on_message_received (self, message):
-        pass
-
-    def on_message_size_exceeded (self):
-        self.close_when_done()
-
-    def on_data_read (self, data):
-        self.__buffer = self.__buffer + data
-        try:
-            message, self.__buffer = self.__buffer.split(self.message_delimiter, 1)
-        except ValueError:
-            if len(self.__buffer) > self.max_message_size:
-                self.__buffer = ''
-                return self.on_message_size_exceeded()
-            return
-
-        message_size = len(message)
-        if message_size > self.message_max_size:
-            return self.on_message_size_exceeded(message)
-
-        self.on_message_received(message)
-
-##############################################################################
-
-class LineOrientedProtocolMixin (ProtocolMixin):
-
-    message_delimiter = '\n'
-    
-    def write_line (self, line):
-        self.write_data(line + self.message_delimiter)
 
 ##############################################################################
 

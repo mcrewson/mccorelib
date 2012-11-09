@@ -16,19 +16,19 @@
 
 import errno, socket, struct, sys
 
-from myapp.async import Reactable, ProtocolMixin
+from myapp import async
 
 ##############################################################################
 
-class SocketReactable (Reactable):
+class SocketReactable (async.Reactable):
 
-    socket_family = None
+    socket_family = None,
     socket_type   = None
 
-    def __init__ (self, sock=None, reactor=None):
-        super(SocketReactable, self).__init__(reactor=reactor)
-        if sock is not None:
-            self.set_socket(sock)
+    def __init__ (self, socket=None, **kw):
+        super(SocketReactable, self).__init__(**kw)
+        if socket is not None:
+            self.set_socket(socket)
 
     def set_socket (self, sock):
         self.socket = sock
@@ -79,8 +79,8 @@ class TCPReactable (SocketReactable):
 
     ########################################################################## 
 
-    def __init__ (self, address, sock=None, reactor=None):
-        super(TCPReactable, self).__init__(sock=sock, reactor=reactor)
+    def __init__ (self, address=None, **kw):
+        super(TCPReactable, self).__init__(**kw)
         self.address = address
 
     def writable (self):
@@ -135,13 +135,14 @@ class TCPListener (TCPReactable):
 
     accepting = False
 
-    def __init__ (self, address, sock=None, reactor=None):
-        super(TCPListener, self).__init__(address, sock, reactor)
-        if not sock:
+    def __init__ (self, **kw):
+        super(TCPListener, self).__init__(**kw)
+        if not hasattr(self, 'socket'):
             self.create_socket()
             self.set_reuse_addr()
 
     def activate (self):
+        assert self.address is not None, "no address specified for bind"
         self.bind(self.address)
         self.listen(5)
 
@@ -184,10 +185,10 @@ if ssl_supported == True:
 
     class SSLReactable (TCPReactable):
 
-        def __init__ (self, cert, pkey, cacert=None, addr=None, sock=None, reactor=None):
+        def __init__ (self, cert, pkey, cacert=None, **kw):
             self.ssl_ctx = None
             self.set_ssl_certificate(cert, pkey, cacert)
-            super(SSLReactable, self).__init__(addr, sock, reactor)
+            super(SSLReactable, self).__init__(**kw)
 
         def set_ssl_certificae (self, cert, pkey, cacert=None):
             self.set_ssl_context(self._create_ssl_context(cert, pkey, cacert))
@@ -261,10 +262,9 @@ if ssl_supported == True:
 
     class SSLServer (SSLReactable, TCPListener):
 
-        def __init__ (self, address, cert, pkey,
-                      cacert=None, sock=None, reactor=None):
-            SSLReactable.__init__(self, cert, pkey, cacert, sock, reactor)
-            TCPListener.__init__(self, address, sock, reactor)
+        def __init__ (self, **kw):
+            SSLReactable.__init__(self, **kw)
+            TCPListener.__init__(self, **kw)
 
 ##############################################################################
 
@@ -273,8 +273,8 @@ class UDPReactable (SocketReactable):
     socket_family = socket.AF_INET
     socket_type   = socket.SOCK_DGRAM
 
-    def __init__ (self, address, sock=None, reactor=None):
-        super(UDPReactable, self).__init__(sock, reactor)
+    def __init__ (self, address=None, **kw):
+        super(UDPReactable, self).__init__(**kw)
         self.address = address
 
     def handle_read (self):
@@ -288,6 +288,7 @@ class UDPReactable (SocketReactable):
                 raise
 
     def handle_write (self, data):
+        assert self.address is not None, "no address specified for write"
         try:
             sent = self.socket.sendto(data, self.address)
             return sent
@@ -299,13 +300,14 @@ class UDPReactable (SocketReactable):
 
 class UDPListener (UDPReactable):
 
-    def __init__ (self, address, sock=None, reactor=None):
-        super(UDPListener, self).__init__(address, sock, reactor)
-        if not sock:
+    def __init__ (self, **kw):
+        super(UDPListener, self).__init__(**kw)
+        if not hasattr(self, 'socket'):
             self.create_socket()
             self.set_reuse_addr()
 
     def activate (self):
+        assert self.address is not None, "no address specified for bind"
         self.bind(self.address)
 
 ##############################################################################
@@ -329,8 +331,8 @@ class MulticastReactable (UDPReactable):
 
     ##########################################################################
 
-    def __init__ (self, address, interface='', sock=None, reactor=None):
-        super(MulticastReactable, self).__init__(address, sock, reactor)
+    def __init__ (self, interface='', **kw):
+        super(MulticastReactable, self).__init__(**kw)
         self.interface = interface
 
     def handle_read_event (self):
@@ -370,107 +372,16 @@ class MulticastReactable (UDPReactable):
 
 class MulticastListener (MulticastReactable):
 
-    def __init__ (self, address, interface='', sock=None, reactor=None):
-        super(MulticastListener, self).__init__(address, interface, sock, reactor)
-        if not sock:
+    def __init__ (self, **kw):
+        super(MulticastListener, self).__init__(**kw)
+        if not hasattr(self, 'socket'):
             self.create_socket()
             self.set_reuse_addr()
 
     def activate (self):
+        assert self.address is not None, "no address specified for bind"
         self.bind(self.address)
         self.handle_join_group()
-
-##############################################################################
-
-def __test ():
-
-    from myapp.async import get_reactor, LineOrientedProtocolMixin, TimeoutMixin
-
-    class ChatProtocol (TCPReactable, LineOrientedProtocolMixin, TimeoutMixin):
-
-        channels = dict()
-        idletime = 10
-
-        def __init__ (self, address, sock, reactor=None):
-            super(ChatProtocol, self).__init__(address, sock, reactor)
-            ChatProtocol.channels[self] = 1
-            self.nick = None
-            self.write_data('nickname: ')
-            self.set_timeout(self.idletime)
-
-        def on_closed (self):
-            del ChatProtocol.channels[self]
-
-        def on_timeout (self):
-            self.write_line("Connection timed out. Goodbye.")
-            self.handle_talk("[quit - timed out]")
-            self.close_when_done()
-
-        def on_message_received (self, line):
-            self.reset_timeout()
-            if self.nick is None:
-                try:
-                    self.nick = line.split()[0]
-                except IndexError:
-                    self.nick = None
-                if not self.nick:
-                    self.write_line("Huh?")
-                    self.write_data('nickname: ')
-                else:
-                    # Greet
-                    self.write_line("Hello, %s" % self.nick)
-                    self.handle_talk("[joined]")
-                    self.cmd_callers(None)
-            else:
-                if not line: pass
-                elif line[0] != '/':
-                    self.handle_talk(line)
-                else:
-                    self.handle_command(line)
-
-        def handle_talk (self, line):
-            for channel in ChatProtocol.channels.keys():
-                if channel is not self:
-                    channel.write_line("%s: %s" % (self.nick, line))
-
-        def handle_command (self, line):
-            command = line.split()
-            name = 'cmd_%s' % command[0][1:]
-            if hasattr(self, name):
-                method = getattr(self, name)
-                if callable(method):
-                    method(command[1:])
-                    return
-            self.write_line('unknown command: %s' % command[0])
-
-        def cmd_quit (self, args):
-            if args:
-                self.handle_talk('[quit] (%s)' % ' '.join(args))
-            else:
-                self.handle_talk('[quit]')
-            self.write_line('goodbye.')
-            self.close_when_done()
-
-        cmd_q = cmd_quit
-
-        def cmd_callers (self, args):
-            num_channels = len(ChatProtocol.channels)
-            if num_channels == 1:
-                self.write_line("[You're the only caller]")
-            else:
-                self.write_line("[There are %d callers]" % (num_channels))
-                nicks = [ x.nick or '<unknown>' for x in ChatProtocol.channels.keys() ]
-                self.write_data(' ' + '\r\n '.join(nicks) + '\r\n')
-
-    class ChatServer (TCPListener):
-        def on_accept (self, sock, addr):
-            ChatProtocol(addr, sock)
-
-    ChatServer(address=('', 8518)).activate()
-    get_reactor().start()
-
-if __name__ == "__main__":
-    __test()
 
 ##############################################################################
 ## THE END

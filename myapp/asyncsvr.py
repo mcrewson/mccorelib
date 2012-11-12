@@ -20,12 +20,6 @@ from myapp import baseobject, asyncnet
 
 class Protocol (baseobject.BaseObject):
 
-    __buffer = ''
-
-    options = { 'message_delimiter': None,
-                'message_max_size' : 16384
-              }
-
     def on_connection_made (self):
         pass
 
@@ -46,30 +40,90 @@ class Protocol (baseobject.BaseObject):
 
     ##########################################################################
 
-    def __init__ (self, transport, **kw):
+    options = { 'message_delimiter': None,
+                'message_max_size' : 16384
+              }
+
+    _buffer = ''
+
+    def __init__ (self, **kw):
         super(Protocol, self).__init__()
         self._parse_options(Protocol.options, kw)
-        self.transport = transport
 
     def make_connection (self, transport):
         self.on_connection_made()
 
     def data_in (self, data):
         assert self.message_delimiter is not None, "message_delimiter not specified"
-        self.__buffer += data
-        while self.__buffer:
+        self._buffer += data
+        while self._buffer:
             try:
-                message, self.__buffer = self.__buffer.split(self.message_delimiter, 1)
+                message, self._buffer = self._buffer.split(self.message_delimiter, 1)
             except ValueError:
-                if len(self.__buffer) > self.message_max_size:
-                    self.__buffer = ''
+                if len(self._buffer) > self.message_max_size:
+                    self._buffer = ''
                     return self.on_message_size_exceeded()
                 return
 
             if len(message) > self.message_max_size:
+                self._buffer = ''
                 return self.on_message_size_exceeded()
 
             self.on_message_received(message)
+
+##############################################################################
+
+class LineProtocol (Protocol):
+
+    def on_raw_data_received (self, data):
+        pass
+
+    def on_line_received (self, line):
+        pass
+
+    def on_line_length_exceeded (self, line):
+        self.on_message_size_exceeded()
+        self.transport.close_when_done()
+
+    #########################################################################
+
+    options = { 'message_delimiter' : '\r\n' }
+
+    _line_mode = 1
+
+    def __init__ (self, **kw):
+        super(LineProtocol, self).__init__()
+        self._parse_options(LineProtocol.options, kw)
+
+    def data_in (self, data):
+        self._buffer += data
+        while self._line_mode:
+            try:
+                line, self._buffer = self._buffer.split(self.message_delimiter, 1)
+            except ValueError:
+                if len(self._buffer) > self.message_max_size:
+                    line, self._buffer = self._buffer, ''
+                    return self.on_line_length_exceeded(line)
+                break
+            else:
+                if len(self._buffer) > self.message_max_size:
+                    line, self._buffer = self._buffer, ''
+                    return self.on_line_length_exceeded(line)
+                self.on_line_received(line)
+        else:
+            data, self._buffer = self._buffer, ''
+            if data:
+                self.on_raw_data_received(data)
+
+    def set_line_mode (self, extra=''):
+        self._line_mode = 1
+        if extra:
+            return self.data_in(extra)
+
+    def set_raw_mode (self, extra=''):
+        self._line_mode = 0
+        if extra:
+            return self.data_in(extra)
 
 ##############################################################################
 
@@ -77,7 +131,7 @@ class TCPChannel (asyncnet.TCPReactable):
 
     def __init__ (self, protocol, **kw):
         super(TCPChannel, self).__init__(**kw)
-        self.protocol = protocol(self, **kw)
+        self.protocol = protocol(**kw)
         self.protocol.make_connection(self)
 
     def on_data_read (self, data):
@@ -119,7 +173,7 @@ class UDPServer (asyncnet.UDPListener):
     def __init__ (self, protocol, **kw):
         assert issubclass(protocol, Protocol), 'protocol must be a class, not an instance'
         super(UDPServer, self).__init__(**kw)
-        self.protocol = protocol(self, **kw)
+        self.protocol = protocol(**kw)
 
     def on_data_read (self, data):
         self.protocol.make_connection(self)
@@ -132,7 +186,7 @@ class MulticastServer (asyncnet.MulticastListener):
     def __init__ (self, protocol, **kw):
         assert issubclass(protocol, Protocol), 'protocol must be a class, not an instance'
         super(MulticastServer, self).__init__(**kw)
-        self.protocol = protocol(self, **kw)
+        self.protocol = protocol(**kw)
 
     def on_data_read (self, data):
         self.protocol.make_connection(self)

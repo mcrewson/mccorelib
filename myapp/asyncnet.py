@@ -84,7 +84,7 @@ class TCPReactable (SocketReactable):
     def __init__ (self, address=None, **kw):
         super(TCPReactable, self).__init__(**kw)
         self.address = address
-        if not hasattr(self, 'socket'):
+        if hasattr(self, 'socket'):
             self.connected = True
 
     def readable (self):

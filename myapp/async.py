@@ -1,6 +1,6 @@
 # vim:set ts=4 sw=4 et nowrap syntax=python ff=unix:
 #
-# Copyright 2011-2012 Mark Crewson <mark@crewson.net>
+# Copyright 2011-2018 Mark Crewson <mark@crewson.net>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import errno, fcntl, heapq, os, select, sys, time
+
 from collections import deque
 
 from myapp.baseobject        import BaseObject
@@ -313,6 +314,7 @@ class Reactor (object):
         assert isinstance(r, Reactable), "Must only add Reactable instances"
         fd = r.fileno()
         if fd is not None:
+            assert fd not in self.reactables.keys(), "Adding reactable more than once"
             self.reactables[fd] = r
 
     def del_reactable (self, r):
@@ -507,12 +509,16 @@ class EpollReactor (Reactor):
         for fd, reactable in self.reactables.items():
             flags = 0
             if reactable.readable():
-                flags |= select.EPOLLIN | select.EPOLLPRI
+                flags |= select.EPOLLIN
             if reactable.writable():
                 flags |= select.EPOLLOUT
             if flags:
-                flags |= select.EPOLLERR | select.EPOLLHUP
-                poller.register(fd, flags)
+                try:
+                    poller.register(fd, flags)
+                except IOError:
+                    # Invalid file descriptor. It was most likely closed
+                    # while we were in this loop. So just ignore it.
+                    pass
 
         try:
             r = poller.poll(timeout)
@@ -522,12 +528,13 @@ class EpollReactor (Reactor):
             r = []
 
         for fd, flags in r:
-            if flags & (select.EPOLLIN | select.EPOLLPRI):
-                self._reactable_read(fd)
-            if flags & (select.EPOLLOUT):
-                self._reactable_write(fd)
-            if flags & (select.EPOLLERR | select.EPOLLHUP):
+            if flags & (select.EPOLLERR | select.EPOLLHUP) and not (flags & select.EPOLLIN):
                 self._reactable_exception(fd)
+            else:
+                if flags & (select.EPOLLIN):
+                    self._reactable_read(fd)
+                if flags & (select.EPOLLOUT):
+                    self._reactable_write(fd)
 
 ##############################################################################
 

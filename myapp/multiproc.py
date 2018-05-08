@@ -1,6 +1,6 @@
 # vim:set ts=4 sw=4 et nowrap syntax=python ff=unix:
 #
-# Copyright 2011-2012 Mark Crewson <mark@crewson.net>
+# Copyright 2011-2018 Mark Crewson <mark@crewson.net>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,8 @@ __all__ = [ 'ParentController', 'ChildController' ]
 
 import errno, fcntl, os, signal, sys, time, traceback
 
-from myapp.async             import get_reactor
+from myapp.application       import OperationError
+from myapp.async             import free_reactor, get_reactor
 from myapp.baseobject        import BaseObject, NonStdlibError
 from myapp.log               import getlog
 from myapp.string_conversion import convert_to_floating
@@ -33,7 +34,7 @@ class ParentStates:
 
 class ParentController (BaseObject):
 
-    options = { 'housekeeping_period' : (0.5, convert_to_floating) }
+    options = { 'housekeeping_period' : (0.1, convert_to_floating) }
 
     def __init__ (self, **kw):
         super(ParentController, self).__init__(**kw)
@@ -76,10 +77,18 @@ class ParentController (BaseObject):
             raise
         except:
             self.reactor.stop()
+
             exc_type, value, tb = sys.exc_info()
-            if self.exception_hook is not None:
-                self.exception_hook(exc_type, value, tb)
-            self.abort('Unhandled exception in async loop: %s' % value)
+            self.log.warn('unhandled %s in async loop; %s' % (exc_type, value))
+            tblist = (traceback.format_tb(tb, None) +
+                      traceback.format_exception_only(exc_type, value))
+            if type(tblist) != list: tblist = [tblist, ]
+            for line in tblist:
+                for l in line.split('\n'):
+                    if not l: continue
+                    self.log.warn('%s' % l.rstrip())
+
+            raise OperationError('unhandled %s in async loop: %s' % (exc_type, value))
 
     def add_child (self, child):
         self.children.append(child)
@@ -330,6 +339,8 @@ class ChildController (object):
                     for i in range(3, 1024):
                         _close_fd(i)
 
+                    free_reactor()
+
                     signal.signal(signal.SIGTERM, signal.SIG_DFL)
                     signal.signal(signal.SIGINT,  signal.SIG_DFL)
                     signal.signal(signal.SIGQUIT, signal.SIG_DFL)
@@ -341,7 +352,7 @@ class ChildController (object):
                     tb = _get_exception_string()
                     os.write(2, 'could not launch child %s: unknown exception: %s\n' % (self.name, tb))
             finally:
-                os._exit(127)
+                os._exit(0)
 
     def get_stdout_reactable (self, stdout_fd):
         return None
@@ -378,7 +389,7 @@ class ChildController (object):
         except OSError, err:
             if err.errno == 3:
                 # No such process
-                msg = 'failed to kill %s (%s): no such process.  Has it already died?' % (self.name, self.pid)
+                msg = 'failed to kill %s (pid=%s, signal=%d): no such process.  Has it already died?' % (self.name, self.pid, sig)
                 self.log.warning(msg)
             else:
                 msg = "unknown problem killing %s (%s): errno=%d, %s" % (self.name, self.pid, err.errno, err.strerror)
@@ -425,7 +436,6 @@ class ChildController (object):
         if os.WIFEXITED(sts):
             es = os.WEXITSTATUS(sts) & 0xffff
             msg = "exit status %s" % es
-            return es, msg
         elif os.WIFSIGNALED(sts):
             es = -1
             sig = os.WTERMSIG(sts)

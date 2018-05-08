@@ -1,6 +1,6 @@
 # vim:set ts=4 sw=4 et nowrap syntax=python ff=unix:
 #
-# Copyright 2011-2012 Mark Crewson <mark@crewson.net>
+# Copyright 2011-2018 Mark Crewson <mark@crewson.net>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -143,8 +143,13 @@ class Application (BaseObject):
         raise NotImplementedError("Override this function to do something")
 
     def abort (self, message, errorcode=1):
-        sys.stderr.write('ERROR: %s\n' % message)
+        sys.stderr.write('%s\n' % message)
         sys.stderr.flush()
+        try:
+            self.cleanup()
+        except Exception, why:
+            sys.stderr.write('UNEXPECTED ERROR during cleanup: %s\n' & str(why))
+            sys.stderr.flush()
         sys.exit(errorcode)
 
 #############################################################################

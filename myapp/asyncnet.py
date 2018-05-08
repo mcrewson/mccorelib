@@ -1,6 +1,6 @@
 # vim:set ts=4 sw=4 et nowrap syntax=python ff=unix:
 #
-# Copyright 2011-2012 Mark Crewson <mark@crewson.net>
+# Copyright 2011-2018 Mark Crewson <mark@crewson.net>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@ from myapp import async
 
 ##############################################################################
 
-class SocketReactable (async.Reactable):
+class SocketReactable (async.Reactable, async.TimeoutMixin):
 
-    socket_family = None,
+    socket_family = None
     socket_type   = None
 
     def __init__ (self, socket=None, **kw):
@@ -44,6 +44,7 @@ class SocketReactable (async.Reactable):
         return self.socket.fileno()
 
     def handle_close (self):
+        self.set_timeout(None)
         try:
             self.socket.close()
         except socket.error, err:
@@ -73,6 +74,7 @@ class TCPReactable (SocketReactable):
     socket_type   = socket.SOCK_STREAM
 
     connected = False
+    connecting = False
 
     def on_connect (self):
         pass
@@ -82,32 +84,51 @@ class TCPReactable (SocketReactable):
     def __init__ (self, address=None, **kw):
         super(TCPReactable, self).__init__(**kw)
         self.address = address
+        if not hasattr(self, 'socket'):
+            self.connected = True
+
+    def readable (self):
+        if not self.connected: return False
+        return super(TCPReactable, self).readable()
 
     def writable (self):
-        if not self.connected: return True
+        if self.connecting: return True
+        if not self.connected: return False
         return super(TCPReactable, self).writable()
 
-    def handle_read_event (self):
-        if not self.connected:
-            self.handle_connect()
-        super(TCPReactable, self).handle_read_event()
+    def write_data (self, data):
+        if not self.connected: self.connect()
+        super(TCPReactable, self).write_data(data)
 
     def handle_write_event (self):
         if not self.connected:
-            self.handle_connect()
+            if not self.connect():
+                return
         super(TCPReactable, self).handle_write_event()
 
-    def handle_connect (self):
-        assert self.address is not None, "no address specified for connect"
-        self.connected = False
-        err = self.socket.connect_ex(self.address)
-        if err in (errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK):
-            return
-        if err in (errno.EISCONN, 0):
-            self.connected = True
-            self.on_connect()
-        else:
+    def connect (self):
+        err = self.socket.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        if err:
             raise socket.error(err, errno.errorcode.get(err))
+
+        try:
+            err = self.socket.connect_ex(self.address)
+        except socket.error, se:
+            err = se.args[0]
+
+        if err:
+            if err == errno.EISCONN:
+                pass
+            elif err in (errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK):
+                self.connecting = True
+                return False
+            else:
+                raise socket.error(err, errno.errorcode.get(err))
+
+        self.connected = True
+        self.connecting = False
+        self.on_connect()
+        return True
 
     def handle_close (self):
         self.connected = False
@@ -142,7 +163,6 @@ class TCPListener (TCPReactable):
             self.set_reuse_addr()
 
     def activate (self):
-        assert self.address is not None, "no address specified for bind"
         self.bind(self.address)
         self.listen(5)
 
@@ -151,7 +171,12 @@ class TCPListener (TCPReactable):
 
     ##########################################################################
 
+    def readable (self):
+        return self.accepting
+
     def writable (self):
+        # Listening sockets are never writable.
+        # (It's the socket in on_accept that needs to be writable)
         return False
 
     def handle_read_event (self):
@@ -288,7 +313,6 @@ class UDPReactable (SocketReactable):
                 raise
 
     def handle_write (self, data):
-        assert self.address is not None, "no address specified for write"
         try:
             sent = self.socket.sendto(data, self.address)
             return sent
@@ -307,7 +331,6 @@ class UDPListener (UDPReactable):
             self.set_reuse_addr()
 
     def activate (self):
-        assert self.address is not None, "no address specified for bind"
         self.bind(self.address)
 
 ##############################################################################

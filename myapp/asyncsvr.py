@@ -32,6 +32,9 @@ class Protocol (baseobject.BaseObject):
     def on_message_size_exceeded (self):
         pass
 
+    def on_timeout (self):
+        pass
+
     def write (self, data):
         self.transport.write_data(data)
 
@@ -51,7 +54,22 @@ class Protocol (baseobject.BaseObject):
         self._parse_options(Protocol.options, kw)
 
     def make_connection (self, transport):
+        self.transport = transport
         self.on_connection_made()
+
+    def lose_connection (self):
+        if self._buffer:
+            if len(self._buffer) > self.message_max_size:
+                self._buffer = ''
+                return self.on_message_size_exceeded()
+            else:
+                self.on_message_received(self._buffer)
+                self._buffer = ''
+
+        self.on_connection_lost()
+
+    def timeout_connection (self):
+        self.on_timeout()
 
     def data_in (self, data):
         assert self.message_delimiter is not None, "message_delimiter not specified"
@@ -137,8 +155,12 @@ class TCPChannel (asyncnet.TCPReactable):
     def on_data_read (self, data):
         self.protocol.data_in(data)
 
+    def on_timeout (self):
+        self.protocol.timeout_connection()
+        super(TCPChannel, self).on_timeout()
+
     def on_closed (self):
-        self.protocol.on_connection_lost()
+        self.protocol.lose_connection()
         super(TCPChannel, self).on_closed()
 
 class TCPServer (asyncnet.TCPListener):
@@ -201,6 +223,7 @@ def __test ():
     class ChatProtocol (Protocol):
 
         channels = dict()
+        idletime = 10
 
         def write_line (self, line):
             self.write(line + self.message_delimiter)
@@ -209,11 +232,18 @@ def __test ():
             ChatProtocol.channels[self] = 1
             self.nick = None
             self.write('nickname: ')
+            self.transport.set_timeout(self.idletime)
 
         def on_connection_lost (self):
             del ChatProtocol.channels[self]
 
+        def on_timeout (self):
+            self.write_line('Connection timed out. Goodbye.')
+            self.handle_talk('[quit - timed out]')
+            self.close()
+
         def on_message_received (self, line):
+            self.transport.reset_timeout()
             if self.nick is None:
                 try:
                     self.nick = line.split()[0]

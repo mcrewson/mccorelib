@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from myapp import baseobject, asyncnet
+from mccorelib import baseobject, asyncnet
 
 ##############################################################################
 
@@ -221,7 +221,7 @@ class MulticastServer (asyncnet.MulticastListener):
 
 def __test ():
 
-    from myapp.async import get_reactor
+    from mccorelib.async import get_reactor
 
     class ChatProtocol (Protocol):
 

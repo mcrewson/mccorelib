@@ -22,9 +22,9 @@ __all__ = [ 'configure', 'getlog' ]
 
 import errno, logging, new, os, time, types, traceback
 
-from myapp.baseobject        import BaseObject
-from myapp.config            import Config
-from myapp.string_conversion import convert_to_bool
+from mccorelib.baseobject        import BaseObject
+from mccorelib.config            import Config
+from mccorelib.string_conversion import convert_to_bool
 
 try:
     import codecs

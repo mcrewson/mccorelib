@@ -20,8 +20,8 @@ A configuration file parser.
 
 import getopt, os, os.path, re, sys
 
-from myapp.baseobject        import BaseObject, NonStdlibError
-from myapp.string_conversion import convert_to_bool, convert_to_list
+from mccorelib.baseobject        import BaseObject, NonStdlibError
+from mccorelib.string_conversion import convert_to_bool, convert_to_list
 
 ##############################################################################
 

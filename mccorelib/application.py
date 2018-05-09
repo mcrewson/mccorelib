@@ -19,11 +19,11 @@ __all__ = [ 'Application', 'get_app', ]
 
 import signal, sys, traceback
 
-from myapp.async             import get_reactor, free_reactor
-from myapp.baseobject        import BaseObject, NonStdlibError
-from myapp.config            import Config, ConfigError
-from myapp.log               import configure as configurelog, getlog
-from myapp.string_conversion import convert_to_floating
+from mccorelib.async             import get_reactor, free_reactor
+from mccorelib.baseobject        import BaseObject, NonStdlibError
+from mccorelib.config            import Config, ConfigError
+from mccorelib.log               import configure as configurelog, getlog
+from mccorelib.string_conversion import convert_to_floating
 
 #############################################################################
 

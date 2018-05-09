@@ -16,7 +16,7 @@
 
 import errno, socket, struct, sys
 
-from myapp import async
+from mccorelib import async
 
 ##############################################################################
 

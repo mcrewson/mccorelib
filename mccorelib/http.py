@@ -17,8 +17,8 @@
 from io import BytesIO as StringIO
 import tempfile
 
-from myapp.asyncsvr import LineProtocol, TCPServer
-from myapp.string_conversion import convert_to_integer, convert_to_seconds
+from mccorelib.asyncsvr import LineProtocol, TCPServer
+from mccorelib.string_conversion import convert_to_integer, convert_to_seconds
 
 ##############################################################################
 
@@ -598,7 +598,7 @@ def _dashcapitalize (name):
 
 if __name__ == "__main__":
 
-    from myapp.async import get_reactor
+    from mccorelib.async import get_reactor
 
     class MyHttpProtocol (HTTPProtocol):
         def on_request_received (self, request):

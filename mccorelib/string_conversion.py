@@ -28,7 +28,7 @@ __all__ = [ 'ConversionError', 'convert_to_bool', 'convert_to_seconds',
 
 import re
 
-from myapp.baseobject import NonStdlibError
+from mccorelib.baseobject import NonStdlibError
 
 ##############################################################################
 

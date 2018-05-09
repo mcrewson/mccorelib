@@ -18,9 +18,9 @@ import errno, fcntl, heapq, os, select, sys, time
 
 from collections import deque
 
-from myapp.baseobject        import BaseObject
-from myapp.log               import getlog
-from myapp.string_conversion import convert_to_integer
+from mccorelib.baseobject        import BaseObject
+from mccorelib.log               import getlog
+from mccorelib.string_conversion import convert_to_integer
 
 ##############################################################################
 

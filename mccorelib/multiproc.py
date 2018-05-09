@@ -18,11 +18,11 @@ __all__ = [ 'ParentController', 'ChildController' ]
 
 import errno, fcntl, os, signal, sys, time, traceback
 
-from myapp.application       import OperationError
-from myapp.async             import free_reactor, get_reactor
-from myapp.baseobject        import BaseObject, NonStdlibError
-from myapp.log               import getlog
-from myapp.string_conversion import convert_to_floating
+from mccorelib.application       import OperationError
+from mccorelib.async             import free_reactor, get_reactor
+from mccorelib.baseobject        import BaseObject, NonStdlibError
+from mccorelib.log               import getlog
+from mccorelib.string_conversion import convert_to_floating
 
 ##############################################################################
 

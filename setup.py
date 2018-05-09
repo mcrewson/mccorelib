@@ -5,7 +5,7 @@ from distutils.core import setup
 
 setup(
   name='myapp',
-  version='0.0.1',
+  version='0.0.2',
   url='https://github.com/mcrewson/myapp',
   author='Mark Crewson',
   author_email='mark@crewson.net',

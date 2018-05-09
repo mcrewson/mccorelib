@@ -25,21 +25,7 @@ from myapp.string_conversion import convert_to_integer, convert_to_seconds
 class HTTPProtocol (LineProtocol):
 
     def on_request_received (self, request):
-        buf = StringIO()
-        buf.write("DEBUG: method = %s\r\n" % (request.method))
-        buf.write("DEBUG: uri = %s\r\n" % (request.uri))
-        buf.write("DEBUG: clientproto = %s\r\n" % (request.clientproto))
-        buf.write("DEBUG HEADERS:\r\n")
-        for h,v in request.request_headers.get_all_raw_headers():
-            buf.write("  %s: %s\r\n" % (h,v))
-        body = buf.getvalue()
-        buf.close()
-
-        self.write('HTTP/1.1 200 OK\r\n')
-        self.write('Content-Type: text/plain; charset=UTF-8\r\n')
-        self.write("Content-Length: %d\r\n" % (len(body)))
-        self.write('Connection: close\r\n\r\n')
-        self.write(body)
+        pass
 
     ##########################################################################
 
@@ -65,10 +51,10 @@ class HTTPProtocol (LineProtocol):
         self.is_handling_request = False
         
     def on_connection_made (self):
-        self.transport.set_timeout(self.idle_timeout)
+        self.channel.set_timeout(self.idle_timeout)
 
     def on_connection_lost (self):
-        self.transport.set_timeout(None)
+        self.channel.set_timeout(None)
         for req in self.requests:
             req.connection_lost()
 
@@ -76,7 +62,7 @@ class HTTPProtocol (LineProtocol):
         self.close()
 
     def on_line_received (self, line):
-        self.transport.reset_timeout()
+        self.channel.reset_timeout()
 
         self._received_header_size += len(line)
         if self._received_header_size > self.max_header_size:
@@ -90,7 +76,7 @@ class HTTPProtocol (LineProtocol):
             return
 
         if self._firstline:
-            self.requests.append(Request(self))
+            self.requests.append(RequestParse(self))
             self._firstline = False
 
             parts = line.split()
@@ -100,8 +86,8 @@ class HTTPProtocol (LineProtocol):
             command, path, version = parts
             try:
                 command.decode("ascii")
-            except UnicodeDecodeError:
-                self.repond_400()
+            except UnicodeDecodeError, why:
+                self.respond_400(why)
                 return
 
             self._command = command
@@ -129,16 +115,15 @@ class HTTPProtocol (LineProtocol):
             self._header = line
 
     def on_raw_data_received (self, data):
-        self.transport.reset_timeout()
-
+        self.channel.reset_timeout()
         if self.is_handling_request:
             self.data_buffer.append(data)
             return
 
         try:
             self._bodydecoder.data_received(data)
-        except:
-            self.respond_400()
+        except Exception, why:
+            self.respond_400(why)
 
     #####
 
@@ -165,8 +150,8 @@ class HTTPProtocol (LineProtocol):
 
         elif header == 'transfer-encoding' and data.lower() == 'chunked':
             self._length = None
-            self._bodydecoder = ChunkedBodyDecoder(self.requets[-1].handle_content,
-                                                   self.handle_body_recieved)
+            self._bodydecoder = ChunkedBodyDecoder(self.requests[-1].handle_content,
+                                                   self.handle_body_received)
 
         reqheaders = self.requests[-1].request_headers
         values = reqheaders.get_raw_headers(header)
@@ -184,8 +169,15 @@ class HTTPProtocol (LineProtocol):
 
     def handle_headers_received (self):
         req = self.requests[-1]
+        req.parse_cookies()
         self._persistent = self.check_persistence(req, self._version)
         req.got_length(self._length)
+
+        # handle 'Expect: 100-continue' with automated 100 response code,
+        # a simplistic implementation of RFC 2686 8.2.3:
+        expectcontinue = req.request_headers.get_raw_headers('expect')
+        if (expectcontinue and expectcontinue[0].lower() == '100-continue' and self._version == 'HTTP/1.1'):
+            self.respond_100()
 
     def handle_body_received (self, extradata):
         self.handle_request_received()
@@ -206,7 +198,7 @@ class HTTPProtocol (LineProtocol):
 
         # disable the idle timeout, in case this request takes a long time
         # to finish generating output
-        self._saved_timeout = self.transport.set_timeout(None)
+        self._saved_timeout = self.channel.set_timeout(None)
 
         req = self.requests[-1]
         req.handle_request_received(command, path, version)
@@ -218,7 +210,7 @@ class HTTPProtocol (LineProtocol):
         if self._persistent:
             self.is_handling_request = False
             if self._saved_timeout:
-                self.transport.set_timeout(self._saved_timeout)
+                self.channel.set_timeout(self._saved_timeout)
 
             data = ''.join(self.data_buffer)
             self.data_buffer = []
@@ -243,13 +235,16 @@ class HTTPProtocol (LineProtocol):
                 return True
         return False
 
-    def respond_400 (self):
-        self.write('HTTP/1.1 400 Bad Request\r\n\r\n')
+    def respond_100 (self):
+        self.write('HTTP/1.1 100 Continue\r\n\r\n')
+
+    def respond_400 (self, message='Bad Request'):
+        self.write('HTTP/1.1 400 %s\r\n\r\n' % (message))
         self.close()
 
 ##############################################################################
 
-class BasicBodyDecoder:
+class BasicBodyDecoder (object):
 
     def __init__ (self, length, data_cb, finish_cb):
         self.length = length
@@ -277,21 +272,93 @@ class BasicBodyDecoder:
             self.data_cb = self.finish_cb = None
             self.length = 0
 
-            dcb(data[:cl])
-            fcb(data[cl:])
+            dcb(data[:l])
+            fcb(data[l:])
 
     def no_more_data (self):
         # todo
         pass
 
+class ChunkedBodyDecoder (object):
+
+    state = 'CHUNK_LENGTH'
+
+    def __init__ (self, data_cb, finish_cb):
+        self.data_cb = data_cb
+        self.finish_cb = finish_cb
+        self.buffer = ''
+
+    def data_received (self, data):
+        data = self.buffer + data
+        self.buffer = ''
+        while data:
+            data = getattr(self, '_%s' % (self.state,))(data)
+
+    def no_more_data (self):
+        # todo
+        pass
+
+    def _CHUNK_LENGTH (self, data):
+        if '\r\n' in data:
+            line,rest = data.split('\r\n', 1)
+            parts = line.split(';')
+            try:
+                self.length = int(parts[0], 16)
+            except ValueError:
+                raise MalformedChunkedDataError('Chunk-size must be an integer')
+            if self.length == 0:
+                self.state = 'TRAILER'
+            else:
+                self.state = 'BODY'
+            return rest
+        else:
+            self.buffer = data
+            return ''
+
+    def _CRLF (self, data):
+        if data.startswith('\r\n'):
+            self.state = 'CHUNK_LENGTH'
+            return data[2:]
+        else:
+            self.buffer = data
+            return ''
+
+    def _TRAILER (self, data):
+        if data.startswith('\r\n'):
+            data = data[2:]
+            self.state = 'FINISHED'
+            self.finish_cb(data)
+        else:
+            self._buffer = data
+        return ''
+
+    def _BODY (self, data):
+        if len(data) >= self.length:
+            chunk, data = data[:self.length], data[self.length:]
+            self.data_cb(chunk)
+            self.state = 'CRLF'
+            return data
+        elif len(data) < self.length:
+            self.length -= len(data)
+            self.data_cb(data)
+            return ''
+
+    def _FINISHED (self, data):
+        raise RuntimeError('ChunkedBodyDecoder.data_received called after last chunk was processed')
+
 ##############################################################################
 
-class Request:
+class RequestParser:
 
-    def __init__ (self, channel):
-        self.channel = channel
-        self.transport = self.channel.transport
+    def __init__ (self, protocol):
+        self.protocol = protocol
         self.request_headers = Headers()
+        self.request_cookies = {}
+        self.content = None
+
+    def connection_lost (self):
+        if self.content is not None:
+            self.content.close()
 
     def got_length (self, length):
         if length is not None and length < 100000:
@@ -299,21 +366,157 @@ class Request:
         else:
             self.content = tempfile.TemporaryFile()
 
+    def parse_cookies (self):
+        cookieheaders = self.request_headers.get_raw_headers('cookie')
+        if cookieheaders is None: return
+
+        for cookietxt in cookieheaders:
+            if cookietxt:
+                for cook in cookietxt.split(';'):
+                    cook = cook.lstrip()
+                    try:
+                        k,v = cook.split('=', 1)
+                        self.request_cookies[k] = v
+                    except ValueError:
+                        pass
+
     def handle_content (self, data):
+        assert self.content is not None, "cannot handle content when length was not specified"
         self.content.write(data)
 
     def handle_request_received (self, command, path, version):
-        self.content.seek(0, 0)
-        self.method, self.uri = command, path
-        self.clientproto = version
+        if self.content is not None: self.content.seek(0, 0)
 
-        self.channel.on_request_received(self)
-        self.channel.handle_request_done(self)
+        request = Request(command, path, version,
+                          self.request_headers,
+                          self.request_cookies,
+                          self.content,
+                          self.protocol)
 
-    def connection_lost (self):
+        self.protocol.on_request_received(request)
+
+        request.finish()
+        self.protocol.handle_request_done(self)
+
+        del self.protocol
         if self.content is not None:
-            self.content.close()
+            try:
+                self.content.close()
+            except OSError:
+                pass
+            del self.content
 
+##############################################################################
+
+class Request (object):
+
+    finished = 0
+    code = 200
+    code_message = 'OK'
+    started_writing = 0
+    chunked = 0
+
+    def __init__ (self, method, uri, version, headers, cookies, body, protocol):
+        self.method = method
+        self.uri = uri
+        self.version = version
+        self.reqheaders = headers
+        self.reqcookies = cookies
+        self.body = body
+        self.protocol = protocol
+
+        self.respheaders = Headers()
+        self.respcookies = []
+
+    def get_header (self, key):
+        value = self.reqheaders.get_raw_headers(key)
+        if value is not None:
+            return value[-1]
+
+    def get_all_headers (self):
+        headers = {}
+        for k,v in self.reqheaders.get_all_raw_headers():
+            headers[k.lower()] = v[-1]
+        return headers
+
+    def get_cookie (self, key):
+        return self.reqcookies.get(key)
+
+    def set_response_code (self, code, message=None):
+        if not isinstance(code, (int, long)):
+            raise TypeError('HTTP response code must be int or long')
+        self.code = code
+        if message:
+            self.code_message = message
+        else:
+            self.code_message = 'Unknown Status'
+
+    def set_response_header (self, name, value):
+        self.respheaders.set_raw_headers(name, [value])
+
+    def add_cookie (self, k, v, expires=None, domain=None, path=None,
+                    max_age=None, comment=None, secure=None, httponly=False):
+        cookie = k + '=' + v
+        if expires: cookie = cookie + '; Expires=' + expires
+        if domain: cookie = cookie + '; Domain=' + domain
+        if path: cookie = cookie + '; Path=' + path
+        if max_age: cookie = cookie + '; Max-Age=' + max_age
+        if comment: cookie = cookie + '; Comment=' + comment
+        if secure: cookie = cookie + '; Secure'
+        if httponly: cookie = cookie + '; HttpOnly'
+        self.respcookies.append(cookie)
+
+    def write (self, data):
+        if self.finished:
+            raise RuntimeError('Request.write called on a request after Request.finish was called.')
+        if not self.started_writing:
+            self.started_writing = 1
+            version = self.version
+            code = str(self.code)
+            reason = self.code_message
+            headers = []
+
+            for name, values in self.respheaders.get_all_raw_headers():
+                for value in values:
+                    headers.append((name, value))
+
+            # if there is no 'Content-Length' header, we send data in chunked mode,
+            # so that we can support pipelining in persistent connections
+            if ((version == 'HTTP/1.1') and
+                (self.respheaders.get_raw_headers('content-length') is None) and
+                self.method != 'HEAD'):
+                headers.append(('Transfer-Encoding', 'chunked'))
+                self.chunked = 1
+
+            for cookie in self.respcookies:
+                headers.append(('Set-Cookie', cookie))
+
+            # write headers
+            headerseq = [version + ' ' + code + ' ' + reason + '\r\n']
+            headerseq.extend(name + ': ' + value + '\r\n' for name, value in headers)
+            headerseq.append('\r\n')
+            for el in headerseq:
+                self.protocol.write(el)
+
+            if self.method == 'HEAD':
+                self.write = lambda data: None
+                return
+
+        if data:
+            if self.chunked:
+                self.protocol.write(_tochunk(data))
+            else:
+                self.protocol.write(data)
+
+    def finish (self):
+        if self.finished: return
+        if not self.started_writing:
+            self.write('')
+        if self.chunked:
+            self.protocol.write('0\r\n\r\n')
+        self.finished = 1
+
+##############################################################################
 
 class Headers (object):
 
@@ -383,21 +586,53 @@ class Headers (object):
     def remove_header (self, name):
         self.rawheaders.pop(self._encodename(name), None)
 
-def _dashcapitalize (name):
-    return '-'.join([ word.capitalize() for word in name.split('-') ])
-
 ##############################################################################
 
-class HTTPServer (TCPServer):
+def _tochunk (data):
+    return '%x' % (len(data)) + '\r\n' + data + '\r\n'
 
-    def __init__ (self, **kw):
-        super(HTTPServer, self).__init__(HTTPProtocol, **kw)
+def _dashcapitalize (name):
+    return '-'.join([ word.capitalize() for word in name.split('-') ])
 
 ##############################################################################
 
 if __name__ == "__main__":
 
     from myapp.async import get_reactor
+
+    class MyHttpProtocol (HTTPProtocol):
+        def on_request_received (self, request):
+            buf = []
+            buf.append("DEBUG: method = %s" % (request.method))
+            buf.append("DEBUG: uri = %s" % (request.uri))
+            buf.append("DEBUG: version = %s" % (request.version))
+            buf.append("DEBUG HEADERS:")
+            for h,v in request.get_all_headers().items():
+                buf.append("  %s: %s" % (h,v))
+
+            c = request.get_cookie("NAME")
+            if c:
+                buf.append("DEBUG COOKIE:  NAME == \"%s\"" % (c))
+                request.add_cookie('secret', c, expires='100', httponly=True)
+
+            if request.body is not None:
+                buf.append('DEBUG BODY:')
+                reqbody = request.body.read()
+                while reqbody != '':
+                    buf.append(reqbody)
+                    reqbody = request.body.read()
+
+            body = '\n'.join(buf)
+
+            request.set_response_code(200, 'mary had a little lamb')
+            request.set_response_header('Content-Type', 'text/plain; charset=UTF-8')
+            request.set_response_header('Content-Length', str(len(body)))
+
+            request.write(body)
+
+    class HTTPServer (TCPServer):
+        def __init__ (self, **kw):
+            super(HTTPServer, self).__init__(MyHttpProtocol, **kw)
 
     HTTPServer(address=('',8080)).activate()
     get_reactor().start()

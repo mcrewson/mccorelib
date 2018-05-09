@@ -36,10 +36,12 @@ class Protocol (baseobject.BaseObject):
         pass
 
     def write (self, data):
-        self.transport.write_data(data)
+        assert self.channel is not None, "No channel to write to"
+        self.channel.write_data(data)
 
     def close (self):
-        self.transport.close_when_done()
+        assert self.channel is not None, "No channel to close"
+        self.channel.close_when_done()
 
     ##########################################################################
 
@@ -52,9 +54,10 @@ class Protocol (baseobject.BaseObject):
     def __init__ (self, **kw):
         super(Protocol, self).__init__()
         self._parse_options(Protocol.options, kw)
+        self.channel = None
 
-    def make_connection (self, transport):
-        self.transport = transport
+    def make_connection (self, channel):
+        self.channel = channel
         self.on_connection_made()
 
     def lose_connection (self):
@@ -101,7 +104,7 @@ class LineProtocol (Protocol):
 
     def on_line_length_exceeded (self, line):
         self.on_message_size_exceeded()
-        self.transport.close_when_done()
+        self.channel.close_when_done()
 
     #########################################################################
 
@@ -232,7 +235,7 @@ def __test ():
             ChatProtocol.channels[self] = 1
             self.nick = None
             self.write('nickname: ')
-            self.transport.set_timeout(self.idletime)
+            self.channel.set_timeout(self.idletime)
 
         def on_connection_lost (self):
             del ChatProtocol.channels[self]
@@ -243,7 +246,7 @@ def __test ():
             self.close()
 
         def on_message_received (self, line):
-            self.transport.reset_timeout()
+            self.channel.reset_timeout()
             if self.nick is None:
                 try:
                     self.nick = line.split()[0]

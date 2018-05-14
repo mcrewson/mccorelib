@@ -436,6 +436,7 @@ class ChildController (object):
         if os.WIFEXITED(sts):
             es = os.WEXITSTATUS(sts) & 0xffff
             msg = "exit status %s" % es
+            return es, msg
         elif os.WIFSIGNALED(sts):
             es = -1
             sig = os.WTERMSIG(sts)

@@ -76,7 +76,7 @@ class HTTPProtocol (LineProtocol):
             return
 
         if self._firstline:
-            self.requests.append(RequestParse(self))
+            self.requests.append(RequestParser(self))
             self._firstline = False
 
             parts = line.split()

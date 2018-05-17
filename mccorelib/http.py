@@ -229,7 +229,7 @@ class HTTPProtocol (LineProtocol):
 
         if version == 'HTTP/1.1':
             if 'close' in tokens:
-                request.requestHeaders.set_raw_headers('connection', ['close'])
+                request.request_headers.set_raw_headers('connection', ['close'])
                 return False
             else:
                 return True

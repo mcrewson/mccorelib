@@ -216,7 +216,7 @@ class HTTPProtocol (LineProtocol):
             self.data_buffer = []
             self.set_line_mode(data)
         else:
-            self.transfer.close_when_done()
+            self.channel.close_when_done()
         
     #####
 

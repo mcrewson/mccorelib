@@ -5,7 +5,7 @@ from distutils.core import setup
 
 setup(
   name='mccorelib',
-  version='0.0.2',
+  version='0.0.4',
   url='https://github.com/mcrewson/mccorelib',
   author='Mark Crewson',
   author_email='mark@crewson.net',
